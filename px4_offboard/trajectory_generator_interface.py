@@ -130,6 +130,11 @@ class TrajectoryGeneratorInterface(Node):
                     trajectory_msg.velocity[2] = z_i[1]
                     trajectory_msg.acceleration[2] = z_i[2]                
             self.publisher_trajectory.publish(trajectory_msg)
+        else:
+            if(self.trajectory_started):
+                self.trajectory_started = False
+            if(self.arming_state == VehicleStatus.ARMING_STATE_ARMED):
+                self.starting_local_position_ned = self.local_position_ned
 
 
 def main(args=None):
