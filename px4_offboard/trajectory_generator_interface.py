@@ -2,6 +2,7 @@
 ############################################################################
 # This is a ROS2 interface class which takes in the position once
 # and uses the quintic polynomial library to generate a trajectory
+# This interface is using NED coordinates to generate the trajectory
 # ############################################################################
 import rclpy
 import numpy as np
@@ -14,6 +15,8 @@ from px4_msgs.msg import TrajectorySetpoint
 from px4_msgs.msg import VehicleStatus
 from px4_msgs.msg import VehicleLocalPosition
 
+from quintic_generator import QuinticGenerator
+
 class TrajectoryGeneratorInterface(Node):
 
     def __init__(self):
@@ -24,6 +27,8 @@ class TrajectoryGeneratorInterface(Node):
             history=QoSHistoryPolicy.RMW_QOS_POLICY_HISTORY_KEEP_LAST,
             depth=1
         )
+
+        self.quintic_generator = QuinticGenerator()
 
         self.status_sub = self.create_subscription(
             VehicleStatus,
@@ -45,8 +50,14 @@ class TrajectoryGeneratorInterface(Node):
         self.nav_state = VehicleStatus.NAVIGATION_STATE_MAX
         self.arming_state = VehicleStatus.ARMING_STATE_DISARMED
         self.trajectory_generated = False
+        self.trajectory_started = False
         self.local_position_ned = None
-        self.start_time = None
+        self.starting_local_position_ned = None
+        self.trajectory_start_time = None
+        self.x_coeffs = np.zeros((6, 1))
+        self.y_coeffs = np.zeros((6, 1))
+        self.z_coeffs = np.zeros((6, 1))
+        self.t_seg = 0
 
     # Vehicle status callback
     def vehicle_status_callback(self, msg):
@@ -60,33 +71,66 @@ class TrajectoryGeneratorInterface(Node):
     def vehicle_local_position_ned_callback(self, msg):
         # Do we need to handle vehicle local position callback here?
         self.local_position_ned = msg
-        if(not self.trajectory_generated):
-            self.trajectory_generated = True
-            self.start_time = self.local_position_ned.timestamp/1.0e6
-        print("Self local position")
-        print(self.local_position_ned.x)
-        print(self.local_position_ned.y)
-        print(self.local_position_ned.z)
-        print(self.start_time)
-
+        if(self.local_position_ned.xy_valid):
+            if(not self.trajectory_generated):
+                self.trajectory_generated = True
+                self.starting_local_position_ned = msg
+                waypoints = np.transpose(np.array([[0.0, 0.0, 0.0],
+                        [5.0, 0.0, -3.0]]))
+                self.x_coeffs, self.y_coeffs, self.z_coeffs, self.t_seg = self.quintic_generator.new_mission(waypoints, 0.3, 0.3)
+                print(self.x_coeffs)
+                print(self.t_seg)
     # Command loop callback
     def cmdloop_callback(self):
         # Publish offboard control modes
         offboard_msg = OffboardControlMode()
         offboard_msg.timestamp = int(Clock().now().nanoseconds / 1000)
         offboard_msg.position=True
-        offboard_msg.velocity=False
-        offboard_msg.acceleration=False
+        offboard_msg.velocity=True
+        offboard_msg.acceleration=True
         self.publisher_offboard_mode.publish(offboard_msg)
         if (self.nav_state == VehicleStatus.NAVIGATION_STATE_OFFBOARD and self.arming_state == VehicleStatus.ARMING_STATE_ARMED):
-
             trajectory_msg = TrajectorySetpoint()
-            trajectory_msg.position[0] = self.radius * np.cos(self.theta)
-            trajectory_msg.position[1] = self.radius * np.sin(self.theta)
-            trajectory_msg.position[2] = -2.0
+            if(self.trajectory_started == False):
+                self.trajectory_started = True
+                self.trajectory_start_time = int(Clock().now().nanoseconds/1.0e9)
+
+                x_i, y_i, z_i = self.quintic_generator.interpolate_trajectory(self.x_coeffs, self.y_coeffs, self.z_coeffs, 0, 0)
+                print(x_i)
+                trajectory_msg.position[0] = x_i[0] + self.starting_local_position_ned.x
+                trajectory_msg.velocity[0] = x_i[1]
+                trajectory_msg.acceleration[0] = x_i[2]
+
+                trajectory_msg.position[1] = y_i[0] + self.starting_local_position_ned.y
+                trajectory_msg.velocity[1] = y_i[1]
+                trajectory_msg.acceleration[1] = y_i[2]
+
+                trajectory_msg.position[2] = z_i[0] + self.starting_local_position_ned.z
+                trajectory_msg.velocity[2] = z_i[1]
+                trajectory_msg.acceleration[2] = z_i[2]
+            else:
+                curr_time = int(Clock().now().nanoseconds/1.0e9)
+                # if trajectory ended, hover
+                if(curr_time - self.trajectory_start_time > self.t_seg):
+                    print(curr_time - self.trajectory_start_time)
+                    trajectory_msg.position[0] = self.local_position_ned.x
+                    trajectory_msg.position[1] = self.local_position_ned.y
+                    trajectory_msg.position[2] = self.local_position_ned.z
+                else:
+                    x_i, y_i, z_i = self.quintic_generator.interpolate_trajectory(self.x_coeffs, self.y_coeffs, self.z_coeffs, curr_time, self.trajectory_start_time)
+                    trajectory_msg.position[0] = x_i[0] + self.starting_local_position_ned.x
+                    trajectory_msg.velocity[0] = x_i[1]
+                    trajectory_msg.acceleration[0] = x_i[2]
+
+                    trajectory_msg.position[1] = y_i[0] + self.starting_local_position_ned.y
+                    trajectory_msg.velocity[1] = y_i[1]
+                    trajectory_msg.acceleration[1] = y_i[2]
+
+                    trajectory_msg.position[2] = z_i[0] + self.starting_local_position_ned.z
+                    trajectory_msg.velocity[2] = z_i[1]
+                    trajectory_msg.acceleration[2] = z_i[2]                
             self.publisher_trajectory.publish(trajectory_msg)
 
-            self.theta = self.theta + self.omega * self.dt
 
 def main(args=None):
     rclpy.init(args=args)
