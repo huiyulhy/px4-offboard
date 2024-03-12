@@ -6,7 +6,7 @@ import numpy as np
 # It takes in multiple waypoints and generates a piecewise continuous
 # polynomial between the waypoints
 # Main variables
-# List of waypoints - this should be an nx3 array
+# List of waypoints - this should be an nx4 array (x, y, z, heading)
 # coeffs - this is a (n-1) x 6 matrix, as there will be n-1 piecewise
 # continuous polynomials to stitch the trajectory
 # Current trajectory: for input with multiple waypoints, 
@@ -40,8 +40,6 @@ class QuinticGenerator():
             if(np.linalg.norm(waypoints[:][1] - waypoints[:][0], 2) < 0.5):
                 raise Exception("Error: Trajectory is too short")
 
-        if(waypoints.shape[1] > 2):
-            raise Exception("Currently not provisioned for more than 2 waypoints!")
         self.waypoints = waypoints
         
     def set_max_speed(self, max_speed) -> None:
@@ -60,7 +58,6 @@ class QuinticGenerator():
         self.set_max_accel(max_accel)
         full_state_waypoints = self.compute_full_state_waypoints(waypoints)
         self.full_state_waypoints = full_state_waypoints
-        print(full_state_waypoints)
         x_coeffs = np.zeros((waypoints.shape[1]-1, 6))
         y_coeffs = np.zeros((waypoints.shape[1]-1, 6))
         z_coeffs = np.zeros((waypoints.shape[1]-1, 6))
@@ -82,7 +79,7 @@ class QuinticGenerator():
             x_coeffs[:][i] = x_c
             y_coeffs[:][i] = y_c
             z_coeffs[:][i] = z_c
-        return x_coeffs, y_coeffs, z_coeffs, t_segment    
+        return x_coeffs, y_coeffs, z_coeffs, t_segment
 
     # This breaks the waypoints down into the fullstate
     # waypoints is a 3 x n matrix 
@@ -91,45 +88,25 @@ class QuinticGenerator():
     # 2nd dimension comes from the derivatives
     # 3rd dimension - waypoint segment
     # Current behavior: z should be 0 at start and end, 
-    # z acceleration should be -ve max at the 1st waypoint, 0 -ve max at end (upwards acceleration)
-    # x and y acc should be max towards the next waypoint at first and last waypoints
-    # apportion such that 0.5 of max accel goes to vertical axes, 0.5 goes to x-y plane
-    # x and y acc should be 0 at all intermediate waypoints 
-    # x and y vel should be resolved such that the planar vel is at max speed
+    # All accelerations should be 0 at the waypoints
+    # Assume 0 climb rate through the waypoints (z_d = 0) -> x_d ^2 + y_d^2 = v_max ^2
     def compute_full_state_waypoints(self, waypoints) -> np.array:
         n_waypoints = waypoints.shape[1]
-        full_state_waypoints = np.zeros((waypoints.shape[0], 3, n_waypoints))
-
-        # Compute x_dd, y_dd, z_dd
-        # Set z_dd to -ve max at the 1st waypoint
-        #full_state_waypoints[2][2][0] = -self.max_accel/2.0
-        #full_state_waypoints[2][2][n_waypoints-1] = -self.max_accel/2.0 -> need to figure out end condition
-
-        # dist = np.linalg.norm(waypoints[:][1] - waypoints[:][0], 2)
-        # delta_x = waypoints[0][1] - waypoints[0][0]
-        # delta_y = waypoints[1][1] - waypoints[1][0]
-        # x_accel = np.sign(delta_x) * np.sqrt(pow(abs(delta_x)/dist, 2.0)) * 0.5 * self.max_accel
-        # y_accel = np.sign(delta_y) * np.sqrt(pow(abs(delta_y)/dist, 2.0)) * 0.5 * self.max_accel
-
-        # full_state_waypoints[0][2][0] = x_accel
-        # full_state_waypoints[1][2][0] = y_accel
-
-        # dist = np.linalg.norm(waypoints[:][n_waypoints-2] - waypoints[:][n_waypoints-1], 2)
-        # delta_x = waypoints[0][n_waypoints-1] - waypoints[0][n_waypoints-2]
-        # delta_y = waypoints[1][n_waypoints-1] - waypoints[1][n_waypoints-2]
-        # x_accel = np.sign(delta_x) * np.sqrt(pow(abs(delta_x)/dist, 2.0)) * 0.5 * self.max_accel
-        # y_accel = np.sign(delta_y) * np.sqrt(pow(abs(delta_y)/dist, 2.0)) * 0.5 * self.max_accel
-            
-        # full_state_waypoints[0][2][n_waypoints-1] = -x_accel
-        # full_state_waypoints[1][2][n_waypoints-1] = -y_accel
+        full_state_waypoints = np.zeros((waypoints.shape[0], 3, n_waypoints)) 
 
         for i in range(n_waypoints):
+
+            # Set position waypoints
             full_state_waypoints[:, 0, i] = waypoints[:, i]
 
-        if(n_waypoints == 2):
-            return full_state_waypoints
-        else:
-            raise Exception("Currently not provisioned for more than 2 waypoints!")
+            # Set velocity values for intermediate waypoints
+            if(i > 0 and i < (n_waypoints-1)):
+                prev_heading = np.arctan2(waypoints[0][i]-waypoints[0][i-1], waypoints[1][i] - waypoints[1][i-1])
+                next_heading = np.arctan2(waypoints[0][i+1]-waypoints[0][i], waypoints[1][i+1]-waypoints[1][i])
+                heading = 0.5*(prev_heading + next_heading)
+                full_state_waypoints[:, 1, i] = np.array([self.max_speed*np.sin(heading), self.max_speed*np.cos(heading), 0])
+
+        return full_state_waypoints
         
     # Computes all of the piecewise polynomials for a fullstate
     # x, y, z are full states (position, velocity, acceleration)
